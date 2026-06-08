@@ -1,0 +1,26 @@
+# AI Sentinel output files
+# These may contain sensitive host data — never commit them
+sentinel_data.json
+*.json
+
+# Exception: keep package metadata if ever added
+!package.json
+!package-lock.json
+
+# Logs
+*.log
+
+# Environment / secrets
+.env
+.env.*
+
+# OS artifacts
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Editor directories
+.vscode/
+.idea/
+*.swp
+*.swo
