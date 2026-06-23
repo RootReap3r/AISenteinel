@@ -177,7 +177,7 @@ tr.s td{background:rgba(255,102,136,.04)}
           <span style="color:var(--accent2)">Anthropic (Claude)</span>
         </div>
         <input type="password" class="api-key-input" id="key-anthropic" placeholder="sk-ant-api03-...">
-        <input type="text" class="api-model-input" id="mod-anthropic" placeholder="claude-sonnet-4-20250514">
+        <input type="text" class="api-model-input" id="mod-anthropic" placeholder="claude-sonnet-4-6">
         <span class="api-hint" style="font-size:9px;color:var(--dim)">console.anthropic.com</span>
       </div>
 
@@ -335,9 +335,14 @@ var SD = null;
 var ENVCTX = '';
 var AR = {};
 
+function esc(s) {
+  if (s == null) return '';
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
 // Provider config
 var PCONF = {
-  anthropic: {url:'https://api.anthropic.com/v1/messages',           def:'claude-sonnet-4-20250514',      fmt:'ant', label:'Claude'},
+  anthropic: {url:'https://api.anthropic.com/v1/messages',           def:'claude-sonnet-4-6',             fmt:'ant', label:'Claude'},
   deepseek:  {url:'https://api.deepseek.com/v1/chat/completions',    def:'deepseek-chat',                 fmt:'oai', label:'DeepSeek'},
   qwen:      {url:'https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions', def:'qwen-max',  fmt:'oai', label:'Qwen'},
   openai:    {url:'https://api.openai.com/v1/chat/completions',      def:'gpt-4o',                        fmt:'oai', label:'GPT-4o'},
@@ -413,6 +418,7 @@ async function callProvider(prov, sys, usr, tok) {
   if (prov.cfg.fmt === 'ant') {
     hdrs['x-api-key'] = prov.key;
     hdrs['anthropic-version'] = '2023-06-01';
+    hdrs['anthropic-dangerous-request-source'] = 'user-prompt';
     body = JSON.stringify({model:prov.model, max_tokens:tok, system:sys, messages:[{role:'user',content:usr}]});
   } else {
     hdrs['Authorization'] = 'Bearer ' + prov.key;
@@ -485,29 +491,6 @@ function buildSummaryPrompt(scores) {
   return {sys:sys, usr:usr};
 }
 
-// Merge findings from multiple models
-function mergeFindings(allResults, phase) {
-  var merged = {};
-  allResults.forEach(function(res) {
-    var findings = (phase === 'mal') ? (res.data.behavioral_findings||[]) : (res.data.findings||[]);
-    findings.forEach(function(f) {
-      var key = (f.title||f.behavior||f.id||'').toLowerCase().substring(0,30);
-      if (!merged[key]) {
-        merged[key] = {finding: f, sources: [res.label], count: 1};
-      } else {
-        merged[key].sources.push(res.label);
-        merged[key].count++;
-        // Escalate severity if multiple models agree
-        var sev = {critical:4, high:3, medium:2, low:1};
-        if ((sev[f.severity]||0) > (sev[merged[key].finding.severity]||0)) {
-          merged[key].finding.severity = f.severity;
-        }
-      }
-    });
-  });
-  return Object.values(merged).sort(function(a,b){ return b.count - a.count; });
-}
-
 // Main analysis
 async function runAnalysis(providers) {
   var consensusMode = document.getElementById('consensus-mode').checked && providers.length > 1;
@@ -565,7 +548,7 @@ async function runAnalysis(providers) {
       });
       var malResults = await Promise.all(malPromises);
       AR.malAll = malResults.filter(function(r){ return r !== null; });
-      AR.malAll.forEach(function(r){ plog('  ' + r.label + ': ' + r.data.threat_level + ' (score ' + r.data.risk_score + ')', 'ok'); });
+      AR.malAll.forEach(function(r){ plog('  ' + r.label + ': ' + (r.data.malware_detected ? 'MALWARE' : r.data.verdict||'CLEAN') + ' (score ' + r.data.risk_score + ')', 'ok'); });
     } else {
       plog('Running malware scan with ' + primary.cfg.label + '...', 'i');
       var malResult = {label: primary.cfg.label, data: safeJSON(await callProvider(primary, mp.sys, mp.usr, 2200))};
@@ -624,7 +607,7 @@ function renderDash(providers, consensusMode) {
   var persum = (SD.persistence||{}).summary || {};
   var malDet = AR.malAll && AR.malAll.some(function(r){ return r.data.malware_detected; });
   var metrics = [
-    {v:score+'/100', l:'RISK SCORE', c: score>=70?'d':score>=40?'w':'ok'},
+    {v:score+'/100', l:'RISK SCORE', c: score>=80?'d':score>=60?'w':'ok'},
     {v:esum.failed_logons||0, l:'FAILED LOGONS', c:(esum.failed_logons||0)>20?'d':(esum.failed_logons||0)>5?'w':'ok'},
     {v:psum.lolbins_running||0, l:'LOLBINS ACTIVE', c:(psum.lolbins_running||0)>3?'w':'ok'},
     {v:nsum.external||0, l:'EXTERNAL CONNS', c:(nsum.external||0)>30?'w':'ok'},
@@ -669,12 +652,13 @@ function renderDash(providers, consensusMode) {
   document.getElementById('fcnt').textContent = allMerged.length + ' FINDINGS';
   document.getElementById('flist').innerHTML = allMerged.length ? allMerged.map(function(item){
     var f = item.finding;
+    var sev = ['critical','high','medium','low'].indexOf(f.severity) >= 0 ? f.severity : 'low';
     var multiTag = item.count > 1 ? '<span class="tag p">' + item.count + ' MODELS AGREE</span> ' : '';
-    var srcTag = item.sources.map(function(s){ return '<span class="tag gr">' + s + '</span>'; }).join('');
-    return '<div class="finding ' + (f.severity||'low') + '">' +
-      '<div class="fh"><div class="ft">' + (f.title||f.id||'Finding') + '</div><span class="stag">' + (f.severity||'low') + '</span></div>' +
-      '<div class="fd">' + (f.description||'') + '</div>' +
-      (f.remediation ? '<div class="fr">' + f.remediation + '</div>' : '') +
+    var srcTag = item.sources.map(function(s){ return '<span class="tag gr">' + esc(s) + '</span>'; }).join('');
+    return '<div class="finding ' + sev + '">' +
+      '<div class="fh"><div class="ft">' + esc(f.title||f.id||'Finding') + '</div><span class="stag">' + sev + '</span></div>' +
+      '<div class="fd">' + esc(f.description||'') + '</div>' +
+      (f.remediation ? '<div class="fr">' + esc(f.remediation) + '</div>' : '') +
       '<div class="fsrc">' + multiTag + srcTag + '</div>' +
       '</div>';
   }).join('') : '<div class="empty">No significant findings</div>';
@@ -683,13 +667,13 @@ function renderDash(providers, consensusMode) {
   if (sum.top_priorities && sum.top_priorities.length) {
     document.getElementById('priorities-panel').style.display = 'block';
     document.getElementById('priorities-list').innerHTML = sum.top_priorities.map(function(p, i){
-      return '<div style="display:flex;gap:12px;align-items:flex-start;margin-bottom:10px;font-family:var(--ui);font-size:14px;color:var(--text2)"><span style="font-family:var(--display);font-size:13px;color:var(--accent2);min-width:24px">' + (i+1) + '</span><span>' + p + '</span></div>';
+      return '<div style="display:flex;gap:12px;align-items:flex-start;margin-bottom:10px;font-family:var(--ui);font-size:14px;color:var(--text2)"><span style="font-family:var(--display);font-size:13px;color:var(--accent2);min-width:24px">' + (i+1) + '</span><span>' + esc(p) + '</span></div>';
     }).join('');
   }
 
   // System profile
   var sys = SD.system || {};
-  document.getElementById('sprof').innerHTML = '<table><tr><td style="color:var(--text2)">HOSTNAME</td><td>' + (sys.hostname||'—') + '</td></tr><tr><td style="color:var(--text2)">OS</td><td>' + (sys.os_name||'—') + '</td></tr><tr><td style="color:var(--text2)">VERSION</td><td>' + (sys.os_version||'—') + ' (Build ' + (sys.os_build||'—') + ')</td></tr><tr><td style="color:var(--text2)">USER</td><td>' + (sys.username||'—') + ' @ ' + (sys.domain||'—') + '</td></tr><tr><td style="color:var(--text2)">RAM</td><td>' + (sys.total_memory_gb||'—') + ' GB</td></tr><tr><td style="color:var(--text2)">MODEL</td><td>' + (sys.manufacturer||'—') + ' ' + (sys.model||'—') + '</td></tr><tr><td style="color:var(--text2)">LAST BOOT</td><td>' + (sys.last_boot ? new Date(sys.last_boot).toLocaleString() : '—') + '</td></tr></table>';
+  document.getElementById('sprof').innerHTML = '<table><tr><td style="color:var(--text2)">HOSTNAME</td><td>' + esc(sys.hostname||'—') + '</td></tr><tr><td style="color:var(--text2)">OS</td><td>' + esc(sys.os_name||'—') + '</td></tr><tr><td style="color:var(--text2)">VERSION</td><td>' + esc(sys.os_version||'—') + ' (Build ' + esc(sys.os_build||'—') + ')</td></tr><tr><td style="color:var(--text2)">USER</td><td>' + esc(sys.username||'—') + ' @ ' + esc(sys.domain||'—') + '</td></tr><tr><td style="color:var(--text2)">RAM</td><td>' + esc(sys.total_memory_gb||'—') + ' GB</td></tr><tr><td style="color:var(--text2)">MODEL</td><td>' + esc(sys.manufacturer||'—') + ' ' + esc(sys.model||'—') + '</td></tr><tr><td style="color:var(--text2)">LAST BOOT</td><td>' + (sys.last_boot ? new Date(sys.last_boot).toLocaleString() : '—') + '</td></tr></table>';
 
   // Defender
   var def = sys.defender || {};
@@ -709,7 +693,7 @@ function renderDash(providers, consensusMode) {
   document.getElementById('ecnt').textContent = evts.length;
   document.getElementById('etbl').innerHTML = evts.slice(0,300).map(function(e){
     var lc = (e.level==='Error'||e.level==='Critical') ? '#ff6688' : e.level==='Warning' ? '#ffe066' : 'var(--dim)';
-    return '<tr><td>' + new Date(e.time).toLocaleString() + '</td><td><span class="tag b">' + e.id + '</span></td><td>' + (e.description||'') + '</td><td>' + (e.source||'').substring(0,25) + '</td><td>' + (e.user||'') + '</td><td style="color:' + lc + '">' + (e.level||'') + '</td></tr>';
+    return '<tr><td>' + new Date(e.time).toLocaleString() + '</td><td><span class="tag b">' + e.id + '</span></td><td>' + esc(e.description||'') + '</td><td>' + esc((e.source||'').substring(0,25)) + '</td><td>' + esc(e.user||'') + '</td><td style="color:' + lc + '">' + esc(e.level||'') + '</td></tr>';
   }).join('');
 
   // Processes
@@ -720,14 +704,14 @@ function renderDash(providers, consensusMode) {
   document.getElementById('ucnt').textContent = unsigs.length;
   document.getElementById('apcnt').textContent = procs.length;
   document.getElementById('ltbl').innerHTML = lols.map(function(p){
-    return '<tr class="' + (p.suspicious_path?'s':'') + '"><td style="color:#ffe066">' + p.name + '</td><td>' + p.pid + '</td><td title="' + (p.path||'') + '">' + (p.path||'—').substring(0,48) + '</td><td>' + (p.suspicious_path?'<span class="tag r">SUSP PATH</span>':'') + (p.has_no_path?'<span class="tag r">NO IMG</span>':'') + '</td></tr>';
+    return '<tr class="' + (p.suspicious_path?'s':'') + '"><td style="color:#ffe066">' + esc(p.name) + '</td><td>' + p.pid + '</td><td title="' + esc(p.path||'') + '">' + esc((p.path||'—').substring(0,48)) + '</td><td>' + (p.suspicious_path?'<span class="tag r">SUSP PATH</span>':'') + (p.has_no_path?'<span class="tag r">NO IMG</span>':'') + '</td></tr>';
   }).join('') || '<tr><td colspan="4" class="empty">None detected</td></tr>';
   document.getElementById('utbl').innerHTML = unsigs.slice(0,50).map(function(p){
-    return '<tr><td>' + p.name + '</td><td>' + p.pid + '</td><td title="' + (p.path||'') + '">' + (p.path||'—').substring(0,48) + '</td><td><span class="tag y">' + (p.signature_status||'UNSIGNED') + '</span></td></tr>';
+    return '<tr><td>' + esc(p.name) + '</td><td>' + p.pid + '</td><td title="' + esc(p.path||'') + '">' + esc((p.path||'—').substring(0,48)) + '</td><td><span class="tag y">' + esc(p.signature_status||'UNSIGNED') + '</span></td></tr>';
   }).join('') || '<tr><td colspan="4" class="empty">None detected</td></tr>';
   document.getElementById('aptbl').innerHTML = procs.slice(0,150).map(function(p){
     var nc = p.is_lolbin ? '#ffe066' : p.suspicious_path ? '#ffaa44' : 'var(--text)';
-    return '<tr><td style="color:' + nc + '">' + p.name + '</td><td>' + p.pid + '</td><td>' + (p.cpu||0) + '</td><td>' + (p.memory_mb||0) + '</td><td>' + (p.company||'—').substring(0,22) + '</td><td>' + (p.is_lolbin?'<span class="tag y">LOLBIN</span>':'') + (p.suspicious_path?'<span class="tag r">SUSP</span>':'') + (!p.is_signed&&p.path?'<span class="tag gr">UNSIG</span>':'') + '</td></tr>';
+    return '<tr><td style="color:' + nc + '">' + esc(p.name) + '</td><td>' + p.pid + '</td><td>' + (p.cpu||0) + '</td><td>' + (p.memory_mb||0) + '</td><td>' + esc((p.company||'—').substring(0,22)) + '</td><td>' + (p.is_lolbin?'<span class="tag y">LOLBIN</span>':'') + (p.suspicious_path?'<span class="tag r">SUSP</span>':'') + (!p.is_signed&&p.path?'<span class="tag gr">UNSIG</span>':'') + '</td></tr>';
   }).join('');
 
   // Network
@@ -736,15 +720,15 @@ function renderDash(providers, consensusMode) {
   document.getElementById('excnt').textContent = exts.length;
   document.getElementById('acnt').textContent = conns.length;
   document.getElementById('extbl').innerHTML = exts.map(function(c){
-    return '<tr class="' + (c.suspicious_port?'s':'') + '"><td>' + (c.process||'—') + '</td><td>' + c.remote_address + '</td><td>' + c.remote_port + '</td><td style="color:' + (c.is_established?'#40ffaa':'var(--dim)') + '">' + c.state + '</td><td>' + (c.suspicious_port?'<span class="tag r">SUSP PORT</span>':'') + '</td></tr>';
+    return '<tr class="' + (c.suspicious_port?'s':'') + '"><td>' + esc(c.process||'—') + '</td><td>' + esc(c.remote_address) + '</td><td>' + c.remote_port + '</td><td style="color:' + (c.is_established?'#40ffaa':'var(--dim)') + '">' + esc(c.state) + '</td><td>' + (c.suspicious_port?'<span class="tag r">SUSP PORT</span>':'') + '</td></tr>';
   }).join('') || '<tr><td colspan="5" class="empty">No external connections</td></tr>';
   document.getElementById('atbl').innerHTML = conns.slice(0,150).map(function(c){
-    return '<tr><td>' + (c.process||'—') + '</td><td>' + c.local_address + ':' + c.local_port + '</td><td>' + c.remote_address + ':' + c.remote_port + '</td><td style="color:' + (c.is_established?'#40ffaa':'var(--dim)') + '">' + c.state + '</td></tr>';
+    return '<tr><td>' + esc(c.process||'—') + '</td><td>' + esc(c.local_address) + ':' + c.local_port + '</td><td>' + esc(c.remote_address) + ':' + c.remote_port + '</td><td style="color:' + (c.is_established?'#40ffaa':'var(--dim)') + '">' + esc(c.state) + '</td></tr>';
   }).join('');
   var dns = (SD.dns_cache||{entries:[]}).entries;
   document.getElementById('dcnt').textContent = dns.length;
   document.getElementById('dtbl').innerHTML = dns.slice(0,150).map(function(d){
-    return '<tr><td>' + (d.name||'') + '</td><td>' + (d.type||'') + '</td><td>' + (d.data||'—') + '</td><td>' + (d.ttl||'—') + '</td></tr>';
+    return '<tr><td>' + esc(d.name||'') + '</td><td>' + esc(d.type||'') + '</td><td>' + esc(d.data||'—') + '</td><td>' + esc(d.ttl||'—') + '</td></tr>';
   }).join('');
 
   // Persistence
@@ -756,20 +740,20 @@ function renderDash(providers, consensusMode) {
   document.getElementById('tkcnt').textContent = tasks.length;
   document.getElementById('scnt').textContent = svcs.length;
   document.getElementById('rtbl').innerHTML = regs.map(function(r){
-    return '<tr class="' + (r.suspicious?'s':'') + '"><td>' + (r.name||'') + '</td><td>' + (r.key||'').split('\\').pop() + '</td><td title="' + (r.value||'') + '">' + (r.value||'—').substring(0,48) + '</td><td>' + (r.suspicious?'<span class="tag r">SUSP</span>':'<span class="tag g">OK</span>') + '</td></tr>';
+    return '<tr class="' + (r.suspicious?'s':'') + '"><td>' + esc(r.name||'') + '</td><td>' + esc((r.key||'').split('\\').pop()) + '</td><td title="' + esc(r.value||'') + '">' + esc((r.value||'—').substring(0,48)) + '</td><td>' + (r.suspicious?'<span class="tag r">SUSP</span>':'<span class="tag g">OK</span>') + '</td></tr>';
   }).join('') || '<tr><td colspan="4" class="empty">None found</td></tr>';
   document.getElementById('tktbl').innerHTML = tasks.slice(0,80).map(function(t){
-    return '<tr class="' + (t.suspicious?'s':'') + '"><td>' + (t.name||'') + '</td><td title="' + (t.action||'') + '">' + (t.action||'—').substring(0,55) + '</td><td>' + (t.suspicious?'<span class="tag r">SUSP</span>':'') + (t.non_microsoft?'<span class="tag y">NON-MS</span>':'') + '</td></tr>';
+    return '<tr class="' + (t.suspicious?'s':'') + '"><td>' + esc(t.name||'') + '</td><td title="' + esc(t.action||'') + '">' + esc((t.action||'—').substring(0,55)) + '</td><td>' + (t.suspicious?'<span class="tag r">SUSP</span>':'') + (t.non_microsoft?'<span class="tag y">NON-MS</span>':'') + '</td></tr>';
   }).join('');
   document.getElementById('stbl').innerHTML = svcs.slice(0,80).map(function(s){
-    return '<tr class="' + (s.suspicious?'s':'') + '"><td>' + (s.name||'') + '</td><td style="color:' + (s.state==='Running'?'#40ffaa':'var(--dim)') + '">' + (s.state||'') + '</td><td>' + (s.start_mode||'') + '</td><td>' + (s.account||'—') + '</td><td title="' + (s.path||'') + '">' + (s.path||'—').substring(0,42) + '</td><td>' + (s.suspicious?'<span class="tag r">SUSP</span>':'') + '</td></tr>';
+    return '<tr class="' + (s.suspicious?'s':'') + '"><td>' + esc(s.name||'') + '</td><td style="color:' + (s.state==='Running'?'#40ffaa':'var(--dim)') + '">' + esc(s.state||'') + '</td><td>' + esc(s.start_mode||'') + '</td><td>' + esc(s.account||'—') + '</td><td title="' + esc(s.path||'') + '">' + esc((s.path||'—').substring(0,42)) + '</td><td>' + (s.suspicious?'<span class="tag r">SUSP</span>':'') + '</td></tr>';
   }).join('');
 
   // Filesystem
   var files = (SD.filesystem||{recent_suspicious_files:[]}).recent_suspicious_files;
   document.getElementById('ffcnt').textContent = files.length;
   document.getElementById('fftbl').innerHTML = files.map(function(f){
-    return '<tr class="' + (!f.is_signed?'s':'') + '"><td>' + (f.name||'') + '</td><td title="' + (f.path||'') + '">' + (f.path||'—').substring(0,48) + '</td><td>' + (f.extension||'') + '</td><td>' + (f.modified ? new Date(f.modified).toLocaleDateString() : '—') + '</td><td style="color:' + (f.is_signed?'#40ffaa':'#ff6688') + '">' + (f.is_signed?'YES':'NO') + '</td><td>' + (f.sha256||'—').substring(0,14) + '...</td></tr>';
+    return '<tr class="' + (!f.is_signed?'s':'') + '"><td>' + esc(f.name||'') + '</td><td title="' + esc(f.path||'') + '">' + esc((f.path||'—').substring(0,48)) + '</td><td>' + esc(f.extension||'') + '</td><td>' + (f.modified ? new Date(f.modified).toLocaleDateString() : '—') + '</td><td style="color:' + (f.is_signed?'#40ffaa':'#ff6688') + '">' + (f.is_signed?'YES':'NO') + '</td><td>' + esc((f.sha256||'—').substring(0,14)) + '...</td></tr>';
   }).join('') || '<tr><td colspan="6" class="empty">None found</td></tr>';
 
   // Users
@@ -777,13 +761,13 @@ function renderDash(providers, consensusMode) {
   var admins = (SD.users||{}).local_admins || [];
   var lo = (SD.users||{}).logged_on || [];
   document.getElementById('upnl').innerHTML = users.map(function(u){
-    return '<div style="margin-bottom:8px;padding:8px;border:1px solid var(--border);border-radius:4px;background:var(--bg2)"><div style="font-family:var(--ui);font-weight:600;font-size:14px;color:' + (u.enabled?'var(--text)':'var(--dim)') + '">' + (u.name||'') + (!u.password_required?' <span class="tag r">NO PWD</span>':'') + (!u.enabled?' <span class="tag gr">DISABLED</span>':'') + '</div><div style="font-family:var(--mono);font-size:10px;color:var(--dim);margin-top:3px">Last logon: ' + (u.last_logon ? new Date(u.last_logon).toLocaleDateString() : 'Never') + '</div></div>';
+    return '<div style="margin-bottom:8px;padding:8px;border:1px solid var(--border);border-radius:4px;background:var(--bg2)"><div style="font-family:var(--ui);font-weight:600;font-size:14px;color:' + (u.enabled?'var(--text)':'var(--dim)') + '">' + esc(u.name||'') + (!u.password_required?' <span class="tag r">NO PWD</span>':'') + (!u.enabled?' <span class="tag gr">DISABLED</span>':'') + '</div><div style="font-family:var(--mono);font-size:10px;color:var(--dim);margin-top:3px">Last logon: ' + (u.last_logon ? new Date(u.last_logon).toLocaleDateString() : 'Never') + '</div></div>';
   }).join('') || '<div class="empty">None</div>';
   document.getElementById('apnl').innerHTML = admins.map(function(a){
-    return '<div style="margin-bottom:8px;padding:8px;border:1px solid rgba(255,102,136,.25);border-radius:4px;background:rgba(255,102,136,.04)"><div style="font-family:var(--ui);font-weight:600;font-size:14px;color:#ff6688">' + (a.name||'') + '</div><div style="font-family:var(--mono);font-size:10px;color:var(--dim);margin-top:3px">' + (a.object_class||'') + '</div></div>';
+    return '<div style="margin-bottom:8px;padding:8px;border:1px solid rgba(255,102,136,.25);border-radius:4px;background:rgba(255,102,136,.04)"><div style="font-family:var(--ui);font-weight:600;font-size:14px;color:#ff6688">' + esc(a.name||'') + '</div><div style="font-family:var(--mono);font-size:10px;color:var(--dim);margin-top:3px">' + esc(a.object_class||'') + '</div></div>';
   }).join('') || '<div class="empty">None</div>';
   document.getElementById('lopnl').innerHTML = lo.length ? lo.map(function(u){
-    return '<div style="font-family:var(--mono);font-size:12px;padding:6px;border-bottom:1px solid var(--border)">' + (u.username||'—') + ' <span class="tag g">ACTIVE</span></div>';
+    return '<div style="font-family:var(--mono);font-size:12px;padding:6px;border-bottom:1px solid var(--border)">' + esc(u.username||'—') + ' <span class="tag g">ACTIVE</span></div>';
   }).join('') : '<div class="empty">No active sessions detected</div>';
 
   // AI Analysis tab — one panel per model
@@ -800,7 +784,7 @@ function renderDash(providers, consensusMode) {
     });
   }
   allRaw.forEach(function(item){
-    aiPanels += '<div class="pnl" style="margin-bottom:14px"><div class="ph"><span class="pt">' + item.label + '</span><span class="pb b">JSON</span></div><div style="padding:14px;max-height:400px;overflow-y:auto"><pre style="font-family:var(--mono);font-size:10px;color:var(--text2);white-space:pre-wrap;line-height:1.6">' + JSON.stringify(item.data, null, 2) + '</pre></div></div>';
+    aiPanels += '<div class="pnl" style="margin-bottom:14px"><div class="ph"><span class="pt">' + esc(item.label) + '</span><span class="pb b">JSON</span></div><div style="padding:14px;max-height:400px;overflow-y:auto"><pre style="font-family:var(--mono);font-size:10px;color:var(--text2);white-space:pre-wrap;line-height:1.6">' + esc(JSON.stringify(item.data, null, 2)) + '</pre></div></div>';
   });
   document.getElementById('ai-panels').innerHTML = aiPanels;
 }

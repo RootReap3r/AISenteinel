@@ -16,11 +16,16 @@ $since = (Get-Date).AddHours(-$EventHours)
 $criticalEventIDs = @{4624="Successful Logon";4625="Failed Logon";4634="Logoff";4648="Explicit Creds Logon";4672="Special Privileges";4688="New Process";4689="Process Exit";4698="Scheduled Task Created";4699="Scheduled Task Deleted";4702="Scheduled Task Updated";4719="Audit Policy Changed";4720="User Account Created";4722="User Account Enabled";4724="Password Reset";4725="User Account Disabled";4726="User Account Deleted";4728="Added to Global Group";4732="Added to Local Group";4738="User Account Changed";4756="Added to Universal Group";4768="Kerberos TGT";4769="Kerberos SvcTicket";4771="Kerberos Pre-Auth Fail";4776="Credential Validation";1102="Audit Log Cleared";4616="System Time Changed";4103="PS Module Log";4104="PS Script Block";7036="Service State Change";7045="New Service Installed";5156="Network Connection Allowed"}
 
 $eventLogs = @()
+$userPropIdx = @{1102=1;4698=1;4699=1;4702=1;4688=1;4689=1;4719=1;4720=4;4722=2;4724=4;4725=2;4726=2;4728=4;4732=4;4738=4;4756=4;4776=1;7045=4}
 foreach ($logName in @("Security","System","Application","Microsoft-Windows-PowerShell/Operational","Microsoft-Windows-TaskScheduler/Operational","Microsoft-Windows-Windows Defender/Operational")) {
     try {
-        $rawEvents = Get-WinEvent -LogName $logName -ErrorAction SilentlyContinue | Where-Object { $_.TimeCreated -ge $since -and ($criticalEventIDs.ContainsKey($_.Id) -or $logName -like "*Defender*") } | Select-Object -First 200
+        $filter = @{LogName=$logName; StartTime=$since}
+        if ($logName -notlike "*Defender*") { $filter['Id'] = @($criticalEventIDs.Keys) }
+        $rawEvents = Get-WinEvent -FilterHashtable $filter -MaxEvents 200 -ErrorAction SilentlyContinue
+        if (-not $rawEvents) { continue }
         foreach ($evt in $rawEvents) {
-            $userVal = ""; try { $userVal = [string]$evt.Properties[5].Value } catch {}
+            $idx = if ($userPropIdx.ContainsKey([int]$evt.Id)) { $userPropIdx[[int]$evt.Id] } else { 5 }
+            $userVal = ""; try { $userVal = [string]$evt.Properties[$idx].Value } catch {}
             $msgVal = ""; try { $raw = $evt.Message -replace '\s+',' '; $msgVal = $raw.Substring(0,[Math]::Min(400,$raw.Length)) } catch {}
             $descVal = if ($criticalEventIDs[[int]$evt.Id]) { $criticalEventIDs[[int]$evt.Id] } else { $evt.TaskDisplayName }
             $eventLogs += [PSCustomObject]@{id=$evt.Id;time=$evt.TimeCreated.ToString("o");level=$evt.LevelDisplayName;source=$evt.ProviderName;log=$logName;description=$descVal;message=$msgVal;user=$userVal;computer=$evt.MachineName}
@@ -56,7 +61,7 @@ Write-Host "[*] Mapping network connections..." -ForegroundColor Yellow
 $connections = @()
 foreach ($conn in (Get-NetTCPConnection -EA SilentlyContinue)) {
     $procName=""; try{$procName=(Get-Process -Id $conn.OwningProcess -EA SilentlyContinue).Name}catch{}
-    $isExt = $conn.RemoteAddress -notmatch '^(10\.|172\.(1[6-9]|2[0-9]|3[01])\.|192\.168\.|127\.|::1|0\.0\.0\.0|::$)'
+    $isExt = $conn.RemoteAddress -notmatch '^(10\.|172\.(1[6-9]|2[0-9]|3[01])\.|192\.168\.|127\.|::1|0\.0\.0\.0|::|fe80:|fc[0-9a-f]{2}:|fd[0-9a-f]{2}:)'
     $suspPort = $conn.RemotePort -in @(4444,5555,1337,31337,6666,7777,8888,9999,12345,54321,6667)
     $connections += [PSCustomObject]@{local_address=$conn.LocalAddress;local_port=$conn.LocalPort;remote_address=$conn.RemoteAddress;remote_port=$conn.RemotePort;state=$conn.State.ToString();pid=$conn.OwningProcess;process=$procName;is_external=$isExt;suspicious_port=$suspPort;is_established=($conn.State -eq "Established")}
 }
@@ -145,7 +150,8 @@ Write-Host "  -> $($dnsEntries.Count) DNS entries" -ForegroundColor Green
 $data.collection_errors=$errors
 $data.collection_meta=@{version="1.1";timestamp=(Get-Date).ToString("o");elevated=([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)}
 $json=$data|ConvertTo-Json -Depth 10 -Compress
-[System.IO.File]::WriteAllText((Join-Path (Get-Location) $OutputFile),$json,[System.Text.Encoding]::UTF8)
+$outDir = if ($PSScriptRoot) { $PSScriptRoot } else { (Get-Location).Path }
+[System.IO.File]::WriteAllText((Join-Path $outDir $OutputFile),$json,[System.Text.Encoding]::UTF8)
 
 Write-Host ""
 Write-Host "============================================" -ForegroundColor Cyan
