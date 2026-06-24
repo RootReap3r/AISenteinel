@@ -3,12 +3,17 @@
 
 param(
     [int]$EventHours = 24,
+    [int]$FilesystemDays = 7,
     [string]$OutputFile = "sentinel_data.json"
 )
 
 Write-Host "[AI SENTINEL] Starting data collection..." -ForegroundColor Cyan
 $data = @{}
 $errors = @()
+
+if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+    Write-Host "[!] WARNING: Not running as Administrator. Security event log, Defender status, firewall, and process paths may be missing or incomplete." -ForegroundColor Red
+}
 
 # 1. EVENT LOGS
 Write-Host "[*] Collecting Event Logs (last $EventHours hours)..." -ForegroundColor Yellow
@@ -97,7 +102,7 @@ Write-Host "  -> $($scheduledTasks.Count) tasks, $($registryItems.Count) run key
 # 5. FILESYSTEM
 Write-Host "[*] Scanning filesystem..." -ForegroundColor Yellow
 $recentFiles = @()
-$cutoff = (Get-Date).AddDays(-7)
+$cutoff = (Get-Date).AddDays(-$FilesystemDays)
 $exts = @(".exe",".dll",".bat",".cmd",".vbs",".ps1",".js",".hta",".scr",".com",".msi")
 foreach ($loc in @($env:TEMP,"$env:USERPROFILE\Downloads","$env:USERPROFILE\Desktop","$env:ProgramData","C:\Windows\Temp")) {
     if (Test-Path $loc) {

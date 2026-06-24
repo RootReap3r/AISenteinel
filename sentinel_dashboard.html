@@ -307,6 +307,10 @@ tr.s td{background:rgba(255,102,136,.04)}
       <div class="pnl"><div class="ph"><span class="pt">ALL TCP</span><span class="pb b" id="acnt">0</span></div><div class="tscroll"><table><thead><tr><th>PROCESS</th><th>LOCAL</th><th>REMOTE</th><th>STATE</th></tr></thead><tbody id="atbl"></tbody></table></div></div>
     </div>
     <div class="pnl" style="margin-top:12px"><div class="ph"><span class="pt">DNS CACHE</span><span class="pb b" id="dcnt">0</span></div><div class="tscroll"><table><thead><tr><th>DOMAIN</th><th>TYPE</th><th>DATA</th><th>TTL</th></tr></thead><tbody id="dtbl"></tbody></table></div></div>
+    <div class="sg" style="margin-top:12px;display:none" id="net-ai-panels">
+      <div class="pnl"><div class="ph"><span class="pt">BEACON INDICATORS</span><span class="pb r" id="bicnt">0</span></div><div style="padding:14px;max-height:280px;overflow-y:auto" id="bipnl"><div class="empty">No indicators</div></div></div>
+      <div class="pnl"><div class="ph"><span class="pt">PERSISTENCE CONCERNS</span><span class="pb y" id="pccnt">0</span></div><div style="padding:14px;max-height:280px;overflow-y:auto" id="pcpnl"><div class="empty">No concerns</div></div></div>
+    </div>
   </div>
   <div class="tc" id="tc-per">
     <div class="sg">
@@ -559,8 +563,10 @@ async function runAnalysis(providers) {
     // Phase 5: Summary
     ppct(85, 'Phase 5: Generating report...');
     plog('Compiling report...', 'i');
-    var scores = AR.malAll.map(function(r){ return {model: r.label, risk_score: r.data.risk_score, malware_detected: r.data.malware_detected, verdict: r.data.verdict}; });
-    scores.push({model: primary.cfg.label + '-events', risk_score: AR.ev.data.risk_score, threat_level: AR.ev.data.threat_level});
+    var scores = AR.malAll.map(function(r){ return {model: r.label + ' (malware-scan)', risk_score: r.data.risk_score, malware_detected: r.data.malware_detected, verdict: r.data.verdict}; });
+    if (AR.ev && AR.ev.data) scores.push({model: AR.ev.label + ' (event-logs)', risk_score: AR.ev.data.risk_score, threat_level: AR.ev.data.threat_level});
+    if (AR.pr && AR.pr.data) scores.push({model: AR.pr.label + ' (processes)', risk_score: AR.pr.data.risk_score, threat_level: AR.pr.data.threat_level});
+    if (AR.net && AR.net.data) scores.push({model: AR.net.label + ' (network)', risk_score: AR.net.data.risk_score, threat_level: AR.net.data.threat_level});
     var sp = buildSummaryPrompt(scores);
     AR.sum = safeJSON(await callProvider(primary, sp.sys, sp.usr, 700));
     plog('Report done', 'ok');
@@ -626,14 +632,9 @@ function renderDash(providers, consensusMode) {
 
   // Findings — merge from all sources
   var allMerged = [];
-  // Add event/process/network findings
-  [{res:AR.ev,phase:'ev'},{res:AR.pr,phase:'pr'},{res:AR.net,phase:'net'}].forEach(function(item){
-    if (item.res && item.res.data && item.res.data.findings) {
-      item.res.data.findings.forEach(function(f){
-        allMerged.push({finding:f, sources:[item.res.label], count:1});
-      });
-    }
-  });
+  // Deduplicate findings across ev/pr/net phases — same title from two phases becomes one finding with count 2
+  var phaseResults = [AR.ev, AR.pr, AR.net].filter(function(r){ return r && r.data && r.data.findings; });
+  allMerged = mergeFindings(phaseResults, 'ev');
   // Merge malware findings from all models
   if (AR.malAll) {
     var malMerged = mergeFindings(AR.malAll, 'mal');
@@ -730,6 +731,22 @@ function renderDash(providers, consensusMode) {
   document.getElementById('dtbl').innerHTML = dns.slice(0,150).map(function(d){
     return '<tr><td>' + esc(d.name||'') + '</td><td>' + esc(d.type||'') + '</td><td>' + esc(d.data||'—') + '</td><td>' + esc(d.ttl||'—') + '</td></tr>';
   }).join('');
+
+  // Beacon indicators and persistence concerns from network AI analysis
+  var netAI = AR.net ? AR.net.data : {};
+  var beacons = netAI.beacon_indicators || [];
+  var persConc = netAI.persistence_concerns || [];
+  if (beacons.length || persConc.length) {
+    document.getElementById('net-ai-panels').style.display = '';
+    document.getElementById('bicnt').textContent = beacons.length;
+    document.getElementById('bipnl').innerHTML = beacons.length ? beacons.map(function(b){
+      return '<div style="font-family:var(--mono);font-size:11px;padding:6px 0;border-bottom:1px solid var(--border);color:var(--red)">' + esc(String(b)) + '</div>';
+    }).join('') : '<div class="empty">None</div>';
+    document.getElementById('pccnt').textContent = persConc.length;
+    document.getElementById('pcpnl').innerHTML = persConc.length ? persConc.map(function(p){
+      return '<div style="font-family:var(--mono);font-size:11px;padding:6px 0;border-bottom:1px solid var(--border);color:var(--yellow)">' + esc(String(p)) + '</div>';
+    }).join('') : '<div class="empty">None</div>';
+  }
 
   // Persistence
   var persist = SD.persistence || {};
