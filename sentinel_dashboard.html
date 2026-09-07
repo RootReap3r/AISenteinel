@@ -487,7 +487,7 @@ function buildSummaryPrompt(scores) {
 
 // Merge findings from multiple models
 function mergeFindings(allResults, phase) {
-  var merged = {};
+  var merged = Object.create(null);
   allResults.forEach(function(res) {
     var findings = (phase === 'mal') ? (res.data.behavioral_findings||[]) : (res.data.findings||[]);
     findings.forEach(function(f) {
@@ -593,220 +593,118 @@ async function runAnalysis(providers) {
   }
 }
 
+// Untrusted telemetry and model output are text, including table attributes.
+function textNode(tag, value, className) {
+  var node = document.createElement(tag);
+  if (className) node.className = className;
+  node.textContent = value == null ? '—' : String(value);
+  return node;
+}
+function renderTable(id, rows) {
+  var target = document.getElementById(id);
+  target.replaceChildren();
+  rows.forEach(function(row) {
+    var tr = document.createElement('tr');
+    row.forEach(function(value) { tr.appendChild(textNode('td', value)); });
+    target.appendChild(tr);
+  });
+}
+function renderProfile(id, rows) {
+  var target = document.getElementById(id), table = document.createElement('table');
+  target.replaceChildren(table);
+  rows.forEach(function(row) {
+    var tr = document.createElement('tr');
+    row.forEach(function(value) { tr.appendChild(textNode('td', value)); });
+    table.appendChild(tr);
+  });
+}
+function listValue(value) { return Array.isArray(value) ? value : []; }
+function severity(value) {
+  return ['critical', 'high', 'medium', 'low', 'info'].indexOf(value) >= 0 ? value : 'low';
+}
 function renderDash(providers, consensusMode) {
   document.getElementById('prog').style.display = 'none';
   document.getElementById('dash').style.display = 'block';
   document.getElementById('stime').textContent = new Date().toLocaleString();
-
-  var sum = AR.sum || {};
+  var data = SD || {}, sum = AR.sum || {};
   var mal = AR.malAll && AR.malAll.length ? AR.malAll[0].data : {};
-  var score = sum.overall_risk_score || mal.risk_score || 0;
-  var level = sum.overall_threat_level || 'UNKNOWN';
-  var cls = score >= 80 ? 'C' : score >= 60 ? 'H' : score >= 30 ? 'M' : 'L';
-  var col = score >= 80 ? '#ff6688' : score >= 60 ? '#ffaa44' : score >= 30 ? '#ffe066' : '#40ffaa';
-
-  document.getElementById('banner').className = 'banner ' + cls;
-  document.getElementById('blvl').textContent = level + ' THREAT';
+  var score = Number(sum.overall_risk_score || mal.risk_score || 0);
+  score = Number.isFinite(score) ? Math.max(0, Math.min(100, score)) : 0;
+  document.getElementById('banner').className = 'banner ' + (score >= 80 ? 'C' : score >= 60 ? 'H' : score >= 30 ? 'M' : 'L');
+  document.getElementById('blvl').textContent = String(sum.overall_threat_level || 'UNKNOWN') + ' THREAT';
   document.getElementById('bsum').textContent = sum.executive_summary || mal.verdict || '';
   document.getElementById('bsnum').textContent = score;
-  document.getElementById('bsnum').style.color = col;
-
-  // Models used badges
-  var mu = document.getElementById('models-used');
-  var badges = (providers || []).map(function(p){ return '<span class="consensus-badge">' + p.cfg.label + '</span>'; });
-  if (consensusMode) badges.unshift('<span class="consensus-badge" style="background:rgba(204,136,255,.15);border-color:rgba(204,136,255,.5)">CONSENSUS</span>');
-  mu.innerHTML = badges.join(' ');
-
-  // Metrics
-  var esum = SD.event_summary || {};
-  var psum = SD.process_summary || {};
-  var nsum = (SD.network||{}).summary || {};
-  var persum = (SD.persistence||{}).summary || {};
-  var malDet = AR.malAll && AR.malAll.some(function(r){ return r.data.malware_detected; });
-  var metrics = [
-    {v:score+'/100', l:'RISK SCORE', c: score>=70?'d':score>=40?'w':'ok'},
-    {v:esum.failed_logons||0, l:'FAILED LOGONS', c:(esum.failed_logons||0)>20?'d':(esum.failed_logons||0)>5?'w':'ok'},
-    {v:psum.lolbins_running||0, l:'LOLBINS ACTIVE', c:(psum.lolbins_running||0)>3?'w':'ok'},
-    {v:nsum.external||0, l:'EXTERNAL CONNS', c:(nsum.external||0)>30?'w':'ok'},
-    {v:persum.suspicious_tasks||0, l:'SUSP TASKS', c:(persum.suspicious_tasks||0)>0?'d':'ok'},
-    {v:psum.unsigned||0, l:'UNSIGNED PROCS', c:(psum.unsigned||0)>15?'w':'ok'},
-    {v:persum.suspicious_registry||0, l:'SUSP REG KEYS', c:(persum.suspicious_registry||0)>0?'d':'ok'},
-    {v:malDet?'YES':'NO', l:'MALWARE DETECTED', c:malDet?'d':'ok'},
-    {v:esum.log_cleared||0, l:'LOG CLEARED', c:(esum.log_cleared||0)>0?'d':'ok'},
-    {v:esum.new_services||0, l:'NEW SERVICES', c:(esum.new_services||0)>2?'w':'ok'},
-    {v:persum.startup_items||0, l:'STARTUP ITEMS', c:(persum.startup_items||0)>5?'w':'ok'},
-    {v:esum.total||0, l:'TOTAL EVENTS', c:'i'}
-  ];
-  document.getElementById('mgrid').innerHTML = metrics.map(function(m){
-    return '<div class="mc ' + m.c + '"><div class="mv">' + m.v + '</div><div class="ml">' + m.l + '</div></div>';
-  }).join('');
-
-  // Findings — merge from all sources
-  var allMerged = [];
-  // Add event/process/network findings
-  [{res:AR.ev,phase:'ev'},{res:AR.pr,phase:'pr'},{res:AR.net,phase:'net'}].forEach(function(item){
-    if (item.res && item.res.data && item.res.data.findings) {
-      item.res.data.findings.forEach(function(f){
-        allMerged.push({finding:f, sources:[item.res.label], count:1});
-      });
-    }
+  document.getElementById('bsnum').style.color = score >= 80 ? '#ff6688' : score >= 60 ? '#ffaa44' : score >= 30 ? '#ffe066' : '#40ffaa';
+  var badges = document.getElementById('models-used');
+  badges.replaceChildren();
+  if (consensusMode) badges.appendChild(textNode('span', 'CONSENSUS', 'consensus-badge'));
+  listValue(providers).forEach(function(p) { badges.appendChild(textNode('span', p.cfg.label, 'consensus-badge')); });
+  var es = data.event_summary || {}, ps = data.process_summary || {};
+  var ns = (data.network || {}).summary || {}, per = data.persistence || {}, pers = per.summary || {};
+  var metrics = [[score + '/100','RISK SCORE'],[es.failed_logons || 0,'FAILED LOGONS'],[ps.lolbins_running || 0,'LOLBINS ACTIVE'],
+    [ns.external || 0,'EXTERNAL CONNS'],[pers.suspicious_tasks || 0,'SUSP TASKS'],[ps.unsigned || 0,'UNSIGNED PROCS'],
+    [pers.suspicious_registry || 0,'SUSP REG KEYS'],[listValue(AR.malAll).some(function(r){return r.data.malware_detected;})?'YES':'NO','MALWARE DETECTED'],
+    [es.log_cleared || 0,'LOG CLEARED'],[es.new_services || 0,'NEW SERVICES'],[pers.startup_items || 0,'STARTUP ITEMS'],[es.total || 0,'TOTAL EVENTS']];
+  var grid = document.getElementById('mgrid'); grid.replaceChildren();
+  metrics.forEach(function(m) { var box=document.createElement('div'); box.className='mc i'; box.append(textNode('div',m[0],'mv'),textNode('div',m[1],'ml')); grid.appendChild(box); });
+  var findings=[];
+  [AR.ev,AR.pr,AR.net].forEach(function(r) { if(r && r.data) listValue(r.data.findings).forEach(function(f){findings.push({finding:f,sources:[r.label],count:1});}); });
+  if (AR.malAll) mergeFindings(AR.malAll,'mal').forEach(function(m){
+    var f=m.finding;
+    findings.push({finding:{severity:f.severity,title:f.behavior||f.id||'Behavioral Finding',description:String(f.description||'')+(f.mitre_ttp?' ['+f.mitre_ttp+']':''),remediation:f.remediation||''},sources:m.sources,count:m.count});
   });
-  // Merge malware findings from all models
-  if (AR.malAll) {
-    var malMerged = mergeFindings(AR.malAll, 'mal');
-    malMerged.forEach(function(m){
-      var f = m.finding;
-      allMerged.push({finding:{id:f.id, severity:f.severity, title:(f.behavior||f.id||'Behavioral Finding'), description:(f.description||'')+(f.mitre_ttp?' ['+f.mitre_ttp+']':''), remediation:f.remediation||''}, sources:m.sources, count:m.count});
-    });
-  }
-  // Sort: multi-model agreement first, then severity
-  var sevOrd = {critical:4,high:3,medium:2,low:1,info:0};
-  allMerged.sort(function(a,b){
-    if (b.count !== a.count) return b.count - a.count;
-    return (sevOrd[b.finding.severity]||0) - (sevOrd[a.finding.severity]||0);
+  var rank={critical:4,high:3,medium:2,low:1,info:0};
+  findings.sort(function(a,b){return b.count-a.count || rank[severity(b.finding.severity)]-rank[severity(a.finding.severity)];});
+  document.getElementById('fcnt').textContent=findings.length+' FINDINGS';
+  var fl=document.getElementById('flist'); fl.replaceChildren();
+  findings.forEach(function(item){
+    var f=item.finding, box=document.createElement('div'); box.className='finding '+severity(f.severity);
+    var header=document.createElement('div'); header.className='fh';
+    header.append(textNode('div',f.title||f.id||'Finding','ft'),textNode('span',severity(f.severity),'stag'));
+    box.append(header,textNode('div',f.description||'','fd'));
+    if(f.remediation)box.appendChild(textNode('div',f.remediation,'fr'));
+    box.appendChild(textNode('div',(item.count>1?item.count+' MODELS AGREE · ':'')+item.sources.join(' · '),'fsrc')); fl.appendChild(box);
   });
-
-  document.getElementById('fcnt').textContent = allMerged.length + ' FINDINGS';
-  document.getElementById('flist').innerHTML = allMerged.length ? allMerged.map(function(item){
-    var f = item.finding;
-    var multiTag = item.count > 1 ? '<span class="tag p">' + item.count + ' MODELS AGREE</span> ' : '';
-    var srcTag = item.sources.map(function(s){ return '<span class="tag gr">' + s + '</span>'; }).join('');
-    return '<div class="finding ' + (f.severity||'low') + '">' +
-      '<div class="fh"><div class="ft">' + (f.title||f.id||'Finding') + '</div><span class="stag">' + (f.severity||'low') + '</span></div>' +
-      '<div class="fd">' + (f.description||'') + '</div>' +
-      (f.remediation ? '<div class="fr">' + f.remediation + '</div>' : '') +
-      '<div class="fsrc">' + multiTag + srcTag + '</div>' +
-      '</div>';
-  }).join('') : '<div class="empty">No significant findings</div>';
-
-  // Top priorities
-  if (sum.top_priorities && sum.top_priorities.length) {
-    document.getElementById('priorities-panel').style.display = 'block';
-    document.getElementById('priorities-list').innerHTML = sum.top_priorities.map(function(p, i){
-      return '<div style="display:flex;gap:12px;align-items:flex-start;margin-bottom:10px;font-family:var(--ui);font-size:14px;color:var(--text2)"><span style="font-family:var(--display);font-size:13px;color:var(--accent2);min-width:24px">' + (i+1) + '</span><span>' + p + '</span></div>';
-    }).join('');
-  }
-
-  // System profile
-  var sys = SD.system || {};
-  document.getElementById('sprof').innerHTML = '<table><tr><td style="color:var(--text2)">HOSTNAME</td><td>' + (sys.hostname||'—') + '</td></tr><tr><td style="color:var(--text2)">OS</td><td>' + (sys.os_name||'—') + '</td></tr><tr><td style="color:var(--text2)">VERSION</td><td>' + (sys.os_version||'—') + ' (Build ' + (sys.os_build||'—') + ')</td></tr><tr><td style="color:var(--text2)">USER</td><td>' + (sys.username||'—') + ' @ ' + (sys.domain||'—') + '</td></tr><tr><td style="color:var(--text2)">RAM</td><td>' + (sys.total_memory_gb||'—') + ' GB</td></tr><tr><td style="color:var(--text2)">MODEL</td><td>' + (sys.manufacturer||'—') + ' ' + (sys.model||'—') + '</td></tr><tr><td style="color:var(--text2)">LAST BOOT</td><td>' + (sys.last_boot ? new Date(sys.last_boot).toLocaleString() : '—') + '</td></tr></table>';
-
-  // Defender
-  var def = sys.defender || {};
-  document.getElementById('defpnl').innerHTML = '<table><tr><td style="color:var(--text2)">ENABLED</td><td style="color:' + (def.enabled?'#40ffaa':'#ff6688') + '">' + (def.enabled?'YES':'NO') + '</td></tr><tr><td style="color:var(--text2)">REAL-TIME</td><td style="color:' + (def.real_time?'#40ffaa':'#ff6688') + '">' + (def.real_time?'ON':'OFF') + '</td></tr><tr><td style="color:var(--text2)">SIG AGE</td><td style="color:' + ((def.signature_age_days||0)>3?'#ff6688':'#40ffaa') + '">' + (def.signature_age_days||'?') + ' days</td></tr><tr><td style="color:var(--text2)">LAST SCAN</td><td>' + (def.last_scan ? new Date(def.last_scan).toLocaleDateString() : '—') + '</td></tr></table>';
-
-  // Firewall
-  var fw = sys.firewall || [];
-  document.getElementById('fwpnl').innerHTML = fw.length ? fw.map(function(f){
-    return '<div style="display:flex;justify-content:space-between;font-family:var(--mono);font-size:12px;margin-bottom:8px"><span style="color:var(--text2)">' + f.profile + '</span><span style="color:' + (f.enabled?'#40ffaa':'#ff6688') + '">' + (f.enabled?'ENABLED':'DISABLED') + '</span></div>';
-  }).join('') : '<div class="empty">No data</div>';
-
-  // Event summary
-  document.getElementById('esum').innerHTML = '<table><tr><td style="color:var(--text2)">TOTAL</td><td>' + (esum.total||0) + '</td></tr><tr><td style="color:var(--text2)">FAILED LOGONS</td><td style="color:' + ((esum.failed_logons||0)>5?'#ff6688':'inherit') + '">' + (esum.failed_logons||0) + '</td></tr><tr><td style="color:var(--text2)">NEW PROCESSES</td><td>' + (esum.new_processes||0) + '</td></tr><tr><td style="color:var(--text2)">NEW SERVICES</td><td style="color:' + ((esum.new_services||0)>0?'#ffe066':'inherit') + '">' + (esum.new_services||0) + '</td></tr><tr><td style="color:var(--text2)">TASKS CREATED</td><td style="color:' + ((esum.scheduled_tasks_created||0)>0?'#ffe066':'inherit') + '">' + (esum.scheduled_tasks_created||0) + '</td></tr><tr><td style="color:var(--text2)">LOG CLEARED</td><td style="color:' + ((esum.log_cleared||0)>0?'#ff6688':'inherit') + '">' + (esum.log_cleared||0) + '</td></tr></table>';
-
-  // Events
-  var evts = SD.event_logs || [];
-  document.getElementById('ecnt').textContent = evts.length;
-  document.getElementById('etbl').innerHTML = evts.slice(0,300).map(function(e){
-    var lc = (e.level==='Error'||e.level==='Critical') ? '#ff6688' : e.level==='Warning' ? '#ffe066' : 'var(--dim)';
-    return '<tr><td>' + new Date(e.time).toLocaleString() + '</td><td><span class="tag b">' + e.id + '</span></td><td>' + (e.description||'') + '</td><td>' + (e.source||'').substring(0,25) + '</td><td>' + (e.user||'') + '</td><td style="color:' + lc + '">' + (e.level||'') + '</td></tr>';
-  }).join('');
-
-  // Processes
-  var procs = SD.processes || [];
-  var lols = procs.filter(function(p){ return p.is_lolbin; });
-  var unsigs = procs.filter(function(p){ return !p.is_signed && p.path && p.path !== ''; });
-  document.getElementById('lcnt').textContent = lols.length;
-  document.getElementById('ucnt').textContent = unsigs.length;
-  document.getElementById('apcnt').textContent = procs.length;
-  document.getElementById('ltbl').innerHTML = lols.map(function(p){
-    return '<tr class="' + (p.suspicious_path?'s':'') + '"><td style="color:#ffe066">' + p.name + '</td><td>' + p.pid + '</td><td title="' + (p.path||'') + '">' + (p.path||'—').substring(0,48) + '</td><td>' + (p.suspicious_path?'<span class="tag r">SUSP PATH</span>':'') + (p.has_no_path?'<span class="tag r">NO IMG</span>':'') + '</td></tr>';
-  }).join('') || '<tr><td colspan="4" class="empty">None detected</td></tr>';
-  document.getElementById('utbl').innerHTML = unsigs.slice(0,50).map(function(p){
-    return '<tr><td>' + p.name + '</td><td>' + p.pid + '</td><td title="' + (p.path||'') + '">' + (p.path||'—').substring(0,48) + '</td><td><span class="tag y">' + (p.signature_status||'UNSIGNED') + '</span></td></tr>';
-  }).join('') || '<tr><td colspan="4" class="empty">None detected</td></tr>';
-  document.getElementById('aptbl').innerHTML = procs.slice(0,150).map(function(p){
-    var nc = p.is_lolbin ? '#ffe066' : p.suspicious_path ? '#ffaa44' : 'var(--text)';
-    return '<tr><td style="color:' + nc + '">' + p.name + '</td><td>' + p.pid + '</td><td>' + (p.cpu||0) + '</td><td>' + (p.memory_mb||0) + '</td><td>' + (p.company||'—').substring(0,22) + '</td><td>' + (p.is_lolbin?'<span class="tag y">LOLBIN</span>':'') + (p.suspicious_path?'<span class="tag r">SUSP</span>':'') + (!p.is_signed&&p.path?'<span class="tag gr">UNSIG</span>':'') + '</td></tr>';
-  }).join('');
-
-  // Network
-  var conns = (SD.network||{}).tcp_connections || [];
-  var exts = conns.filter(function(c){ return c.is_external; });
-  document.getElementById('excnt').textContent = exts.length;
-  document.getElementById('acnt').textContent = conns.length;
-  document.getElementById('extbl').innerHTML = exts.map(function(c){
-    return '<tr class="' + (c.suspicious_port?'s':'') + '"><td>' + (c.process||'—') + '</td><td>' + c.remote_address + '</td><td>' + c.remote_port + '</td><td style="color:' + (c.is_established?'#40ffaa':'var(--dim)') + '">' + c.state + '</td><td>' + (c.suspicious_port?'<span class="tag r">SUSP PORT</span>':'') + '</td></tr>';
-  }).join('') || '<tr><td colspan="5" class="empty">No external connections</td></tr>';
-  document.getElementById('atbl').innerHTML = conns.slice(0,150).map(function(c){
-    return '<tr><td>' + (c.process||'—') + '</td><td>' + c.local_address + ':' + c.local_port + '</td><td>' + c.remote_address + ':' + c.remote_port + '</td><td style="color:' + (c.is_established?'#40ffaa':'var(--dim)') + '">' + c.state + '</td></tr>';
-  }).join('');
-  var dns = (SD.dns_cache||{entries:[]}).entries;
-  document.getElementById('dcnt').textContent = dns.length;
-  document.getElementById('dtbl').innerHTML = dns.slice(0,150).map(function(d){
-    return '<tr><td>' + (d.name||'') + '</td><td>' + (d.type||'') + '</td><td>' + (d.data||'—') + '</td><td>' + (d.ttl||'—') + '</td></tr>';
-  }).join('');
-
-  // Persistence
-  var persist = SD.persistence || {};
-  var regs = persist.registry_run_keys || [];
-  var tasks = persist.scheduled_tasks || [];
-  var svcs = persist.services || [];
-  document.getElementById('rcnt').textContent = regs.length;
-  document.getElementById('tkcnt').textContent = tasks.length;
-  document.getElementById('scnt').textContent = svcs.length;
-  document.getElementById('rtbl').innerHTML = regs.map(function(r){
-    return '<tr class="' + (r.suspicious?'s':'') + '"><td>' + (r.name||'') + '</td><td>' + (r.key||'').split('\\').pop() + '</td><td title="' + (r.value||'') + '">' + (r.value||'—').substring(0,48) + '</td><td>' + (r.suspicious?'<span class="tag r">SUSP</span>':'<span class="tag g">OK</span>') + '</td></tr>';
-  }).join('') || '<tr><td colspan="4" class="empty">None found</td></tr>';
-  document.getElementById('tktbl').innerHTML = tasks.slice(0,80).map(function(t){
-    return '<tr class="' + (t.suspicious?'s':'') + '"><td>' + (t.name||'') + '</td><td title="' + (t.action||'') + '">' + (t.action||'—').substring(0,55) + '</td><td>' + (t.suspicious?'<span class="tag r">SUSP</span>':'') + (t.non_microsoft?'<span class="tag y">NON-MS</span>':'') + '</td></tr>';
-  }).join('');
-  document.getElementById('stbl').innerHTML = svcs.slice(0,80).map(function(s){
-    return '<tr class="' + (s.suspicious?'s':'') + '"><td>' + (s.name||'') + '</td><td style="color:' + (s.state==='Running'?'#40ffaa':'var(--dim)') + '">' + (s.state||'') + '</td><td>' + (s.start_mode||'') + '</td><td>' + (s.account||'—') + '</td><td title="' + (s.path||'') + '">' + (s.path||'—').substring(0,42) + '</td><td>' + (s.suspicious?'<span class="tag r">SUSP</span>':'') + '</td></tr>';
-  }).join('');
-
-  // Filesystem
-  var files = (SD.filesystem||{recent_suspicious_files:[]}).recent_suspicious_files;
-  document.getElementById('ffcnt').textContent = files.length;
-  document.getElementById('fftbl').innerHTML = files.map(function(f){
-    return '<tr class="' + (!f.is_signed?'s':'') + '"><td>' + (f.name||'') + '</td><td title="' + (f.path||'') + '">' + (f.path||'—').substring(0,48) + '</td><td>' + (f.extension||'') + '</td><td>' + (f.modified ? new Date(f.modified).toLocaleDateString() : '—') + '</td><td style="color:' + (f.is_signed?'#40ffaa':'#ff6688') + '">' + (f.is_signed?'YES':'NO') + '</td><td>' + (f.sha256||'—').substring(0,14) + '...</td></tr>';
-  }).join('') || '<tr><td colspan="6" class="empty">None found</td></tr>';
-
-  // Users
-  var users = (SD.users||{}).local_users || [];
-  var admins = (SD.users||{}).local_admins || [];
-  var lo = (SD.users||{}).logged_on || [];
-  document.getElementById('upnl').innerHTML = users.map(function(u){
-    return '<div style="margin-bottom:8px;padding:8px;border:1px solid var(--border);border-radius:4px;background:var(--bg2)"><div style="font-family:var(--ui);font-weight:600;font-size:14px;color:' + (u.enabled?'var(--text)':'var(--dim)') + '">' + (u.name||'') + (!u.password_required?' <span class="tag r">NO PWD</span>':'') + (!u.enabled?' <span class="tag gr">DISABLED</span>':'') + '</div><div style="font-family:var(--mono);font-size:10px;color:var(--dim);margin-top:3px">Last logon: ' + (u.last_logon ? new Date(u.last_logon).toLocaleDateString() : 'Never') + '</div></div>';
-  }).join('') || '<div class="empty">None</div>';
-  document.getElementById('apnl').innerHTML = admins.map(function(a){
-    return '<div style="margin-bottom:8px;padding:8px;border:1px solid rgba(255,102,136,.25);border-radius:4px;background:rgba(255,102,136,.04)"><div style="font-family:var(--ui);font-weight:600;font-size:14px;color:#ff6688">' + (a.name||'') + '</div><div style="font-family:var(--mono);font-size:10px;color:var(--dim);margin-top:3px">' + (a.object_class||'') + '</div></div>';
-  }).join('') || '<div class="empty">None</div>';
-  document.getElementById('lopnl').innerHTML = lo.length ? lo.map(function(u){
-    return '<div style="font-family:var(--mono);font-size:12px;padding:6px;border-bottom:1px solid var(--border)">' + (u.username||'—') + ' <span class="tag g">ACTIVE</span></div>';
-  }).join('') : '<div class="empty">No active sessions detected</div>';
-
-  // AI Analysis tab — one panel per model
-  var aiPanels = '';
-  var allRaw = [
-    {label: 'EVENT LOG ANALYSIS (' + (AR.ev ? AR.ev.label : '') + ')', data: AR.ev ? AR.ev.data : {}},
-    {label: 'PROCESS ANALYSIS (' + (AR.pr ? AR.pr.label : '') + ')', data: AR.pr ? AR.pr.data : {}},
-    {label: 'NETWORK ANALYSIS (' + (AR.net ? AR.net.label : '') + ')', data: AR.net ? AR.net.data : {}},
-    {label: 'EXECUTIVE SUMMARY', data: AR.sum || {}}
-  ];
-  if (AR.malAll) {
-    AR.malAll.forEach(function(r){
-      allRaw.push({label: 'MALWARE SCAN (' + r.label + ')', data: r.data});
-    });
-  }
-  allRaw.forEach(function(item){
-    aiPanels += '<div class="pnl" style="margin-bottom:14px"><div class="ph"><span class="pt">' + item.label + '</span><span class="pb b">JSON</span></div><div style="padding:14px;max-height:400px;overflow-y:auto"><pre style="font-family:var(--mono);font-size:10px;color:var(--text2);white-space:pre-wrap;line-height:1.6">' + JSON.stringify(item.data, null, 2) + '</pre></div></div>';
-  });
-  document.getElementById('ai-panels').innerHTML = aiPanels;
+  if(!findings.length)fl.appendChild(textNode('div','No significant findings','empty'));
+  var priorities=listValue(sum.top_priorities), pl=document.getElementById('priorities-list');pl.replaceChildren();
+  document.getElementById('priorities-panel').style.display=priorities.length?'block':'none';
+  priorities.forEach(function(p,i){pl.appendChild(textNode('p',(i+1)+'. '+p));});
+  var sys=data.system||{}, def=sys.defender||{};
+  renderProfile('sprof',[['HOSTNAME',sys.hostname],['OS',sys.os_name],['VERSION',sys.os_version],['BUILD',sys.os_build],['USER',sys.username],['DOMAIN',sys.domain],['RAM (GB)',sys.total_memory_gb],['MODEL',sys.model],['MANUFACTURER',sys.manufacturer],['LAST BOOT',sys.last_boot]]);
+  renderProfile('defpnl',[['ENABLED',def.enabled?'YES':'NO'],['REAL-TIME',def.real_time?'ON':'OFF'],['SIG AGE',def.signature_age_days],['LAST SCAN',def.last_scan]]);
+  renderProfile('fwpnl',listValue(sys.firewall).map(function(f){return[f.profile,f.enabled?'ENABLED':'DISABLED'];}));
+  renderProfile('esum',[['TOTAL',es.total||0],['FAILED LOGONS',es.failed_logons||0],['NEW PROCESSES',es.new_processes||0],['NEW SERVICES',es.new_services||0],['TASKS CREATED',es.scheduled_tasks_created||0],['LOG CLEARED',es.log_cleared||0]]);
+  var events=listValue(data.event_logs); document.getElementById('ecnt').textContent=events.length;
+  renderTable('etbl',events.slice(0,300).map(function(e){return[e.time,e.id,e.description,e.source,e.user,e.level];}));
+  var procs=listValue(data.processes), lols=procs.filter(function(p){return p.is_lolbin;}), unsigned=procs.filter(function(p){return !p.is_signed&&p.path;});
+  document.getElementById('lcnt').textContent=lols.length;document.getElementById('ucnt').textContent=unsigned.length;document.getElementById('apcnt').textContent=procs.length;
+  renderTable('ltbl',lols.map(function(p){return[p.name,p.pid,p.path,p.suspicious_path?'SUSP PATH':p.has_no_path?'NO IMG':''];}));
+  renderTable('utbl',unsigned.slice(0,50).map(function(p){return[p.name,p.pid,p.path,p.signature_status||'UNSIGNED'];}));
+  renderTable('aptbl',procs.slice(0,150).map(function(p){return[p.name,p.pid,p.cpu||0,p.memory_mb||0,p.company,[p.is_lolbin?'LOLBIN':'',p.suspicious_path?'SUSP':'',!p.is_signed&&p.path?'UNSIG':''].filter(Boolean).join(' ')];}));
+  var conns=listValue((data.network||{}).tcp_connections), external=conns.filter(function(c){return c.is_external;});
+  document.getElementById('excnt').textContent=external.length;document.getElementById('acnt').textContent=conns.length;
+  renderTable('extbl',external.map(function(c){return[c.process,c.remote_address,c.remote_port,c.state,c.suspicious_port?'SUSP PORT':''];}));
+  renderTable('atbl',conns.slice(0,150).map(function(c){return[c.process,String(c.local_address)+':'+c.local_port,String(c.remote_address)+':'+c.remote_port,c.state];}));
+  var dns=listValue((data.dns_cache||{}).entries);document.getElementById('dcnt').textContent=dns.length;
+  renderTable('dtbl',dns.slice(0,150).map(function(d){return[d.name,d.type,d.data,d.ttl];}));
+  var regs=listValue(per.registry_run_keys),tasks=listValue(per.scheduled_tasks),svcs=listValue(per.services);
+  document.getElementById('rcnt').textContent=regs.length;document.getElementById('tkcnt').textContent=tasks.length;document.getElementById('scnt').textContent=svcs.length;
+  renderTable('rtbl',regs.map(function(r){return[r.name,r.key,r.value,r.suspicious?'SUSP':'OK'];}));
+  renderTable('tktbl',tasks.slice(0,80).map(function(t){return[t.name,t.action,[t.suspicious?'SUSP':'',t.non_microsoft?'NON-MS':''].filter(Boolean).join(' ')];}));
+  renderTable('stbl',svcs.slice(0,80).map(function(s){return[s.name,s.state,s.start_mode,s.account,s.path,s.suspicious?'SUSP':''];}));
+  var files=listValue((data.filesystem||{}).recent_suspicious_files);document.getElementById('ffcnt').textContent=files.length;
+  renderTable('fftbl',files.map(function(f){return[f.name,f.path,f.extension,f.modified,f.is_signed?'YES':'NO',f.sha256];}));
+  renderProfile('upnl',listValue((data.users||{}).local_users).map(function(u){return[u.name,u.enabled?'ENABLED':'DISABLED',u.password_required?'PWD REQUIRED':'NO PWD',u.last_logon];}));
+  renderProfile('apnl',listValue((data.users||{}).local_admins).map(function(a){return[a.name,a.object_class];}));
+  renderProfile('lopnl',listValue((data.users||{}).logged_on).map(function(u){return[u.username,'ACTIVE'];}));
+  var ai=document.getElementById('ai-panels');ai.replaceChildren();
+  var raw=[{label:'EXECUTIVE SUMMARY',data:sum}];
+  [AR.ev,AR.pr,AR.net].concat(listValue(AR.malAll)).forEach(function(r){if(r)raw.push(r);});
+  raw.forEach(function(item){var box=document.createElement('div');box.className='pnl';box.style.overflowWrap='anywhere';box.style.whiteSpace='pre-wrap';box.append(textNode('div',item.label,'ph'),textNode('pre',JSON.stringify(item.data,null,2)));ai.appendChild(box);});
 }
 
 function mergeFindings(allResults, phase) {
-  var merged = {};
+  var merged = Object.create(null);
   allResults.forEach(function(res) {
     var findings = (phase === 'mal') ? (res.data.behavioral_findings||[]) : (res.data.findings||[]);
     findings.forEach(function(f) {

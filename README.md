@@ -77,3 +77,9 @@ The key is entered in the dashboard — it never leaves your browser except for 
 - Some data collection requires admin rights; partial data is collected if run as standard user
 - DNS cache beacon detection requires manual review of flagged domains
 - File hash lookup against threat intel feeds (VirusTotal) not included by default
+
+## Rendering security
+
+Imported telemetry and AI output are untrusted. The dashboard now creates DOM nodes and assigns values with `textContent`, including raw JSON panels. Severity classes come from a fixed list. No telemetry-derived HTML or attributes are interpreted. API keys are still supplied locally by the analyst; do not distribute a dashboard with embedded keys.
+
+Regression check: `npm install && npm test`. The test loads the actual dashboard in jsdom and supplies HTML/event-handler payloads in telemetry, findings, severity and raw JSON, then verifies they remain text.
